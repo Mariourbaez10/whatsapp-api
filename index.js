@@ -4,6 +4,9 @@ const {
   DisconnectReason
 } = require('@whiskeysockets/baileys');
 
+const fetch = (...args) =>
+  import('node-fetch').then(({ default: fetch }) => fetch(...args));
+
 const { Boom } = require('@hapi/boom');
 const express = require('express');
 const pino = require('pino');
@@ -47,6 +50,45 @@ async function startWhatsApp() {
       console.log('\n✅ WhatsApp CONECTADO CORRECTAMENTE\n');
     }
   });
+
+  // ✅ AQUÍ ES DONDE VA ESTO
+  sock.ev.on('messages.upsert', async (m) => {
+    const msg = m.messages[0];
+    if (!msg.message || msg.key.fromMe) return;
+
+    const from = msg.key.remoteJid.replace('@s.whatsapp.net', '');
+    const text =
+      msg.message.conversation ||
+      msg.message.extendedTextMessage?.text;
+
+    if (!text) return;
+
+    console.log('📩 Mensaje entrante:', from, text);
+
+    try {
+      const response = await fetch(
+        'https://MarioFeliz.pythonanywhere.com/webhook/whatsapp',
+        {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            from: from,
+            text: text
+          })
+        }
+      );
+
+      const data = await response.json();
+
+      if (data.reply) {
+        await sock.sendMessage(`${from}@s.whatsapp.net`, {
+          text: data.reply
+        });
+      }
+    } catch (err) {
+      console.error('❌ Error enviando a Python:', err.message);
+    }
+  });
 }
 
 // Ruta de prueba
@@ -54,7 +96,7 @@ app.get('/', (req, res) => {
   res.send('WhatsApp API activa 🚀');
 });
 
-// Enviar mensaje
+// Enviar mensaje manual
 app.post('/send', async (req, res) => {
   const { phone, message } = req.body;
 
