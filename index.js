@@ -4,9 +4,6 @@ const {
   DisconnectReason
 } = require('@whiskeysockets/baileys');
 
-const fetch = (...args) =>
-  import('node-fetch').then(({ default: fetch }) => fetch(...args));
-
 const { Boom } = require('@hapi/boom');
 const express = require('express');
 const pino = require('pino');
