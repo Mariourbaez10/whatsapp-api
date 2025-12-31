@@ -50,42 +50,67 @@ async function startWhatsApp() {
     }
   });
 
-  // ✅ AQUÍ ES DONDE VA ESTO
+  // ✅ LÓGICA DE MENSAJES CORREGIDA
   sock.ev.on('messages.upsert', async (m) => {
-    const msg = m.messages[0];
-    if (!msg.message || msg.key.fromMe) return;
-
-    const from = msg.key.remoteJid.replace('@s.whatsapp.net', '');
-    const text =
-      msg.message.conversation ||
-      msg.message.extendedTextMessage?.text;
-
-    if (!text) return;
-
-    console.log('📩 Mensaje entrante:', from, text);
-
     try {
-      const response = await fetch(
-        'https://MarioFeliz.pythonanywhere.com/webhook/whatsapp',
-        {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            from: from,
-            text: text
-          })
+      const msg = m.messages[0];
+      if (!msg.message || msg.key.fromMe) return;
+
+      // 1. Guardamos el ID original exacto para responder sin errores
+      const remoteJid = msg.key.remoteJid;
+
+      // 2. Limpiamos el número solo para enviarlo a Python (Base de datos)
+      const fromClean = remoteJid.replace('@s.whatsapp.net', '').split(':')[0];
+
+      const text =
+        msg.message.conversation ||
+        msg.message.extendedTextMessage?.text;
+
+      if (!text) return;
+
+      console.log('📩 Mensaje de:', fromClean, '| Texto:', text);
+
+      // 3. CONFIGURAR TIMEOUT (60 SEGUNDOS)
+      // Esto evita que Railway corte la conexión si Gemini piensa mucho
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 60000); // 60 segundos
+
+      try {
+        const response = await fetch(
+          'https://MarioFeliz.pythonanywhere.com/webhook/whatsapp',
+          {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              from: fromClean, // Enviamos el numero limpio a Python
+              text: text
+            }),
+            signal: controller.signal // Conectamos el Timeout
+          }
+        );
+
+        const data = await response.json();
+
+        if (data.reply) {
+          // 4. RESPONDEMOS AL JID ORIGINAL (Más seguro para desconocidos)
+          await sock.sendMessage(remoteJid, {
+            text: data.reply
+          });
+          console.log('✅ Respondido a:', fromClean);
         }
-      );
 
-      const data = await response.json();
-
-      if (data.reply) {
-        await sock.sendMessage(`${from}@s.whatsapp.net`, {
-          text: data.reply
-        });
+      } catch (fetchError) {
+        if (fetchError.name === 'AbortError') {
+          console.error('⏳ ERROR: Python tardó demasiado (Timeout 60s).');
+        } else {
+          console.error('❌ Error conexión Python:', fetchError.message);
+        }
+      } finally {
+        clearTimeout(timeoutId); // Limpiamos el reloj
       }
+
     } catch (err) {
-      console.error('❌ Error enviando a Python:', err.message);
+      console.error('❌ Error general en upsert:', err);
     }
   });
 }
@@ -104,6 +129,7 @@ app.post('/send', async (req, res) => {
   }
 
   try {
+    // Reconstrucción simple para envíos manuales
     await sock.sendMessage(`${phone}@s.whatsapp.net`, { text: message });
     res.json({ success: true });
   } catch (err) {
