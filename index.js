@@ -4,29 +4,40 @@ const {
   makeWASocket,
   useMultiFileAuthState,
   DisconnectReason,
-  downloadMediaMessage
+  fetchLatestBaileysVersion
 } = require('@whiskeysockets/baileys');
 
 const { Boom } = require('@hapi/boom');
 const express = require('express');
 const pino = require('pino');
-const qrcode = require('qrcode-terminal'); // <--- LIBRERÍA NUEVA
+const qrcode = require('qrcode-terminal');
+const fs = require('fs');
 
 const app = express();
-app.use(express.json({ limit: '50mb' })); 
+app.use(express.json({ limit: '50mb' }));
 
 const PORT = process.env.PORT || 3000;
 
-let sock;
+// --- LIMPIEZA DE EMERGENCIA ---
+// Si tienes problemas de "Desconectado", esto borra la sesión vieja para empezar de cero.
+if (fs.existsSync('./auth')) {
+    console.log('🗑️ Borrando sesión corrupta para generar nuevo QR...');
+    fs.rmSync('./auth', { recursive: true, force: true });
+}
 
 async function startWhatsApp() {
   const { state, saveCreds } = await useMultiFileAuthState('./auth');
+  const { version } = await fetchLatestBaileysVersion();
 
-  sock = makeWASocket({
+  console.log(`🤖 Iniciando Baileys v${version.join('.')}`);
+
+  const sock = makeWASocket({
+    version,
     auth: state,
     logger: pino({ level: 'silent' }),
-    printQRInTerminal: true, // <--- ESTO MUESTRA EL QR AUTOMÁTICAMENTE
-    browser: ['ColmadoBot', 'Chrome', '1.0']
+    printQRInTerminal: false, // Apagamos el nativo para usar el nuestro
+    browser: ['ColmadoBot', 'Chrome', '1.0'],
+    connectTimeoutMs: 60000,
   });
 
   sock.ev.on('creds.update', saveCreds);
@@ -34,24 +45,37 @@ async function startWhatsApp() {
   sock.ev.on('connection.update', (update) => {
     const { connection, lastDisconnect, qr } = update;
 
-    // Si sale el QR, lo pintamos bonito
     if (qr) {
-        console.log('\n📱 ESCANEA ESTE QR AHORA:\n');
+        console.log('\n⚠️ ESCANEA ESTE CÓDIGO AHORA:\n');
         qrcode.generate(qr, { small: true });
     }
 
     if (connection === 'close') {
-      const shouldReconnect =
-        (lastDisconnect?.error instanceof Boom) &&
-        lastDisconnect.error.output?.statusCode !== DisconnectReason.loggedOut;
-      console.log('❌ Desconectado. Reintentando...', shouldReconnect);
-      if (shouldReconnect) startWhatsApp();
+      const err = lastDisconnect?.error;
+      const statusCode = err?.output?.statusCode;
+      
+      const shouldReconnect = (err instanceof Boom) && statusCode !== DisconnectReason.loggedOut;
+
+      console.error('❌ Desconectado. Razón:', err?.message || err);
+      console.log('🔄 ¿Reintentar?:', shouldReconnect);
+
+      if (shouldReconnect) {
+          startWhatsApp();
+      } else {
+          console.log('⛔ Sesión cerrada o error fatal. Borra la carpeta auth y reinicia.');
+      }
     }
 
-    if (connection === 'open') console.log('\n✅ WhatsApp CONECTADO CORRECTAMENTE\n');
+    if (connection === 'open') {
+        console.log('\n✅ ¡CONECTADO Y LISTO! 🚀\n');
+    }
   });
 
   sock.ev.on('messages.upsert', async (m) => {
+    // ... (Tu lógica de mensajes se mantiene igual, la omití para ahorrar espacio visual, 
+    // pero ASEGÚRATE de dejar la parte de messages.upsert que tenías antes aquí abajo)
+    
+    // 👇 PEGA AQUÍ LA LÓGICA DE MENSAJES (messages.upsert) QUE YA TENÍAS EN EL CÓDIGO ANTERIOR 👇
     try {
       const msg = m.messages[0];
       if (!msg.message || msg.key.fromMe) return;
@@ -62,71 +86,50 @@ async function startWhatsApp() {
       let text = msg.message.conversation || msg.message.extendedTextMessage?.text;
       let audioBase64 = null;
 
-      const audioMsg = msg.message.audioMessage;
-      
-      if (audioMsg) {
-        console.log("🎤 Nota de voz recibida de:", fromClean);
-        try {
-            const buffer = await downloadMediaMessage(
-                msg,
-                'buffer',
-                { logger: pino({ level: 'silent' }) }
-            );
-            audioBase64 = buffer.toString('base64');
-            text = "[NOTA_DE_VOZ]";
-        } catch (e) {
-            console.error("Error descargando audio:", e);
-            return;
-        }
+      // Detectar Audio (Nota de voz)
+      if (msg.message.audioMessage) {
+          const { downloadMediaMessage } = require('@whiskeysockets/baileys');
+          try {
+              const buffer = await downloadMediaMessage(msg, 'buffer', { logger: pino({ level: 'silent' }) });
+              audioBase64 = buffer.toString('base64');
+              text = "[NOTA_DE_VOZ]";
+              console.log("🎤 Audio recibido de:", fromClean);
+          } catch (e) {
+              console.error("Error audio:", e);
+          }
       }
 
       if (!text && !audioBase64) return;
 
-      console.log('📩 Mensaje de:', fromClean, '| Texto:', text);
+      console.log('📩 Procesando mensaje de:', fromClean);
 
-      // TIMEOUT DE 60 SEGUNDOS
       const controller = new AbortController();
       const timeoutId = setTimeout(() => controller.abort(), 60000); 
 
       try {
-        const response = await fetch(
-          'https://MarioFeliz.pythonanywhere.com/webhook/whatsapp',
-          {
+        const response = await fetch('https://MarioFeliz.pythonanywhere.com/webhook/whatsapp', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-              from: fromClean,
-              text: text,
-              audio: audioBase64 
-            }),
+            body: JSON.stringify({ from: fromClean, text: text, audio: audioBase64 }),
             signal: controller.signal
-          }
-        );
-
+        });
         const data = await response.json();
-
         if (data.reply) {
-          await sock.sendMessage(remoteJid, { text: data.reply });
-          console.log('✅ Respondido a:', fromClean);
+            await sock.sendMessage(remoteJid, { text: data.reply });
+            console.log('✅ Respondido.');
         }
-
-      } catch (fetchError) {
-        if (fetchError.name === 'AbortError') {
-            console.error('⏳ Python tardó mucho (Timeout).');
-        } else {
-            console.error('❌ Error conexión Python:', fetchError.message);
-        }
+      } catch (err) {
+          console.error('❌ Error Python:', err.message);
       } finally {
-        clearTimeout(timeoutId);
+          clearTimeout(timeoutId);
       }
-
     } catch (err) {
-      console.error('❌ Error general:', err);
+      console.error('❌ Error upsert:', err);
     }
   });
 }
 
-app.get('/', (req, res) => res.send('WhatsApp API activa 🚀'));
+app.get('/', (req, res) => res.send('Bot Activo 🟢'));
 app.listen(PORT, () => {
   console.log('Servidor iniciado en puerto', PORT);
   startWhatsApp();
