@@ -1,10 +1,14 @@
+// --- PARCHE DE COMPATIBILIDAD (CRUCIAL PARA RAILWAY) ---
 global.fetch = fetch;
+global.crypto = require('crypto'); // <--- ESTO ARREGLA EL ERROR "crypto not defined"
+// -------------------------------------------------------
 
 const {
   makeWASocket,
   useMultiFileAuthState,
   DisconnectReason,
-  fetchLatestBaileysVersion
+  fetchLatestBaileysVersion,
+  downloadMediaMessage
 } = require('@whiskeysockets/baileys');
 
 const { Boom } = require('@hapi/boom');
@@ -19,7 +23,6 @@ app.use(express.json({ limit: '50mb' }));
 const PORT = process.env.PORT || 3000;
 
 // --- LIMPIEZA DE EMERGENCIA ---
-// Si tienes problemas de "Desconectado", esto borra la sesión vieja para empezar de cero.
 if (fs.existsSync('./auth')) {
     console.log('🗑️ Borrando sesión corrupta para generar nuevo QR...');
     fs.rmSync('./auth', { recursive: true, force: true });
@@ -35,7 +38,7 @@ async function startWhatsApp() {
     version,
     auth: state,
     logger: pino({ level: 'silent' }),
-    printQRInTerminal: false, // Apagamos el nativo para usar el nuestro
+    printQRInTerminal: false,
     browser: ['ColmadoBot', 'Chrome', '1.0'],
     connectTimeoutMs: 60000,
   });
@@ -53,16 +56,16 @@ async function startWhatsApp() {
     if (connection === 'close') {
       const err = lastDisconnect?.error;
       const statusCode = err?.output?.statusCode;
-      
       const shouldReconnect = (err instanceof Boom) && statusCode !== DisconnectReason.loggedOut;
 
       console.error('❌ Desconectado. Razón:', err?.message || err);
-      console.log('🔄 ¿Reintentar?:', shouldReconnect);
-
+      
       if (shouldReconnect) {
+          console.log('🔄 Reintentando conexión...');
           startWhatsApp();
       } else {
-          console.log('⛔ Sesión cerrada o error fatal. Borra la carpeta auth y reinicia.');
+          console.log('⛔ Sesión cerrada. Se reiniciará...');
+          startWhatsApp(); // Forzamos reinicio incluso si se cierra
       }
     }
 
@@ -72,10 +75,6 @@ async function startWhatsApp() {
   });
 
   sock.ev.on('messages.upsert', async (m) => {
-    // ... (Tu lógica de mensajes se mantiene igual, la omití para ahorrar espacio visual, 
-    // pero ASEGÚRATE de dejar la parte de messages.upsert que tenías antes aquí abajo)
-    
-    // 👇 PEGA AQUÍ LA LÓGICA DE MENSAJES (messages.upsert) QUE YA TENÍAS EN EL CÓDIGO ANTERIOR 👇
     try {
       const msg = m.messages[0];
       if (!msg.message || msg.key.fromMe) return;
@@ -88,9 +87,13 @@ async function startWhatsApp() {
 
       // Detectar Audio (Nota de voz)
       if (msg.message.audioMessage) {
-          const { downloadMediaMessage } = require('@whiskeysockets/baileys');
           try {
-              const buffer = await downloadMediaMessage(msg, 'buffer', { logger: pino({ level: 'silent' }) });
+              const buffer = await downloadMediaMessage(
+                  msg,
+                  'buffer',
+                  {}, 
+                  { logger: pino({ level: 'silent' }) }
+              );
               audioBase64 = buffer.toString('base64');
               text = "[NOTA_DE_VOZ]";
               console.log("🎤 Audio recibido de:", fromClean);
@@ -101,7 +104,7 @@ async function startWhatsApp() {
 
       if (!text && !audioBase64) return;
 
-      console.log('📩 Procesando mensaje de:', fromClean);
+      console.log('📩 Mensaje de:', fromClean);
 
       const controller = new AbortController();
       const timeoutId = setTimeout(() => controller.abort(), 60000); 
