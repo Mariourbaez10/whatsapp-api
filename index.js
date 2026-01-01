@@ -4,15 +4,16 @@ const {
   makeWASocket,
   useMultiFileAuthState,
   DisconnectReason,
-  downloadMediaMessage // <--- IMPORTANTE: Nueva herramienta
+  downloadMediaMessage
 } = require('@whiskeysockets/baileys');
 
 const { Boom } = require('@hapi/boom');
 const express = require('express');
 const pino = require('pino');
+const qrcode = require('qrcode-terminal'); // <--- LIBRERÍA NUEVA
 
 const app = express();
-app.use(express.json({ limit: '50mb' })); // <--- Aumentamos límite para audios pesados
+app.use(express.json({ limit: '50mb' })); 
 
 const PORT = process.env.PORT || 3000;
 
@@ -24,6 +25,7 @@ async function startWhatsApp() {
   sock = makeWASocket({
     auth: state,
     logger: pino({ level: 'silent' }),
+    printQRInTerminal: true, // <--- ESTO MUESTRA EL QR AUTOMÁTICAMENTE
     browser: ['ColmadoBot', 'Chrome', '1.0']
   });
 
@@ -32,16 +34,21 @@ async function startWhatsApp() {
   sock.ev.on('connection.update', (update) => {
     const { connection, lastDisconnect, qr } = update;
 
-    if (qr) console.log('\n📱 ESCANEA ESTE QR:\n', qr);
+    // Si sale el QR, lo pintamos bonito
+    if (qr) {
+        console.log('\n📱 ESCANEA ESTE QR AHORA:\n');
+        qrcode.generate(qr, { small: true });
+    }
 
     if (connection === 'close') {
       const shouldReconnect =
         (lastDisconnect?.error instanceof Boom) &&
         lastDisconnect.error.output?.statusCode !== DisconnectReason.loggedOut;
+      console.log('❌ Desconectado. Reintentando...', shouldReconnect);
       if (shouldReconnect) startWhatsApp();
     }
 
-    if (connection === 'open') console.log('\n✅ WhatsApp CONECTADO\n');
+    if (connection === 'open') console.log('\n✅ WhatsApp CONECTADO CORRECTAMENTE\n');
   });
 
   sock.ev.on('messages.upsert', async (m) => {
@@ -52,25 +59,21 @@ async function startWhatsApp() {
       const remoteJid = msg.key.remoteJid;
       const fromClean = remoteJid.replace('@s.whatsapp.net', '').split(':')[0];
 
-      // 1. DETECTAR TIPO DE MENSAJE
       let text = msg.message.conversation || msg.message.extendedTextMessage?.text;
       let audioBase64 = null;
 
-      // Si es una nota de voz (audioMessage)
       const audioMsg = msg.message.audioMessage;
       
       if (audioMsg) {
         console.log("🎤 Nota de voz recibida de:", fromClean);
         try {
-            // Descargar el audio
             const buffer = await downloadMediaMessage(
                 msg,
                 'buffer',
                 { logger: pino({ level: 'silent' }) }
             );
-            // Convertir a base64 para enviar a Python
             audioBase64 = buffer.toString('base64');
-            text = "[NOTA_DE_VOZ]"; // Texto marcador
+            text = "[NOTA_DE_VOZ]";
         } catch (e) {
             console.error("Error descargando audio:", e);
             return;
@@ -79,9 +82,9 @@ async function startWhatsApp() {
 
       if (!text && !audioBase64) return;
 
-      console.log('📩 Enviando a Python:', fromClean);
+      console.log('📩 Mensaje de:', fromClean, '| Texto:', text);
 
-      // 2. TIMEOUT (60s porque el audio tarda más)
+      // TIMEOUT DE 60 SEGUNDOS
       const controller = new AbortController();
       const timeoutId = setTimeout(() => controller.abort(), 60000); 
 
@@ -94,7 +97,7 @@ async function startWhatsApp() {
             body: JSON.stringify({
               from: fromClean,
               text: text,
-              audio: audioBase64 // <--- Enviamos el audio aquí
+              audio: audioBase64 
             }),
             signal: controller.signal
           }
@@ -104,11 +107,15 @@ async function startWhatsApp() {
 
         if (data.reply) {
           await sock.sendMessage(remoteJid, { text: data.reply });
-          console.log('✅ Respondido.');
+          console.log('✅ Respondido a:', fromClean);
         }
 
       } catch (fetchError) {
-        console.error('❌ Error conexión Python:', fetchError.message);
+        if (fetchError.name === 'AbortError') {
+            console.error('⏳ Python tardó mucho (Timeout).');
+        } else {
+            console.error('❌ Error conexión Python:', fetchError.message);
+        }
       } finally {
         clearTimeout(timeoutId);
       }
@@ -119,7 +126,7 @@ async function startWhatsApp() {
   });
 }
 
-app.get('/', (req, res) => res.send('WhatsApp Audio Ready 🎤'));
+app.get('/', (req, res) => res.send('WhatsApp API activa 🚀'));
 app.listen(PORT, () => {
   console.log('Servidor iniciado en puerto', PORT);
   startWhatsApp();
