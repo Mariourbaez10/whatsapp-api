@@ -20,6 +20,7 @@ const fs = require('fs');
 const app = express();
 // Aumentamos el límite para que quepan los audios pesados
 app.use(express.json({ limit: '50mb' }));
+let sock;
 
 const PORT = process.env.PORT || 3000;
 
@@ -39,7 +40,7 @@ async function startWhatsApp() {
 
   console.log(`🔥 Iniciando Bot (Baileys v${version.join('.')})`);
 
-  const sock = makeWASocket({
+  sock = makeWASocket({
     version,
     auth: state,
     logger: pino({ level: 'silent' }),
