@@ -57,9 +57,15 @@ async function startWhatsApp() {
     const { connection, lastDisconnect, qr } = update;
 
     if (qr) {
-        console.log('\n👇 ESCANEA ESTE CÓDIGO QR RÁPIDO 👇\n');
+        // Opción 1: Dibujo en terminal (por si acaso)
+        console.log('\n👇 ESCANEA ESTE CÓDIGO QR 👇');
         qrcode.generate(qr, { small: true });
-        console.log('\nEsperando escaneo...\n');
+        
+        // Opción 2: LINK MÁGICO (La solución definitiva)
+        console.log('\n⚠️ ¿EL CÓDIGO SE VE DEFORME? ⚠️');
+        console.log('Copia y pega este link en tu navegador para ver el QR perfecto:');
+        console.log(`https://api.qrserver.com/v1/create-qr-code/?size=300x300&data=${encodeURIComponent(qr)}`);
+        console.log('\n');
     }
 
     if (connection === 'close') {
