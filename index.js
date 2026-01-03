@@ -171,3 +171,25 @@ app.listen(PORT, () => {
   console.log('Servidor iniciado en puerto', PORT);
   startWhatsApp();
 });
+
+app.post('/enviar-mensaje', async (req, res) => {
+    try {
+        const { numero, texto } = req.body;
+        
+        if (!sock) {
+            return res.status(500).json({ error: 'Bot no conectado aún' });
+        }
+
+        // Limpiamos el número por si acaso
+        const jid = numero.includes('@s.whatsapp.net') ? numero : `${numero}@s.whatsapp.net`;
+
+        await sock.sendMessage(jid, { text: texto });
+        console.log(`📤 Mensaje enviado a ${numero} desde el sistema.`);
+        
+        res.json({ status: 'ok', mensaje: 'Enviado' });
+
+    } catch (error) {
+        console.error('❌ Error enviando mensaje push:', error);
+        res.status(500).json({ error: error.message });
+    }
+});
