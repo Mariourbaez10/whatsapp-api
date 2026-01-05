@@ -25,7 +25,6 @@ let sock;
 const PORT = process.env.PORT || 3000;
 
 // --- LIMPIEZA DE EMERGENCIA AL INICIAR ---
-// Si la carpeta auth existe, la borramos para generar un QR nuevo y fresco
 if (fs.existsSync('./auth')) {
     console.log('🧹 Limpiando sesión anterior para evitar conflictos...');
     fs.rmSync('./auth', { recursive: true, force: true });
@@ -44,7 +43,7 @@ async function startWhatsApp() {
     version,
     auth: state,
     logger: pino({ level: 'silent' }),
-    printQRInTerminal: false, // Usaremos qrcode-terminal
+    printQRInTerminal: false,
     browser: ['ColmadoBot', 'Chrome', '1.0'],
     connectTimeoutMs: 60000,
     generateHighQualityLinkPreview: true,
@@ -57,11 +56,9 @@ async function startWhatsApp() {
     const { connection, lastDisconnect, qr } = update;
 
     if (qr) {
-        // Opción 1: Dibujo en terminal (por si acaso)
         console.log('\n👇 ESCANEA ESTE CÓDIGO QR 👇');
         qrcode.generate(qr, { small: true });
         
-        // Opción 2: LINK MÁGICO (La solución definitiva)
         console.log('\n⚠️ ¿EL CÓDIGO SE VE DEFORME? ⚠️');
         console.log('Copia y pega este link en tu navegador para ver el QR perfecto:');
         console.log(`https://api.qrserver.com/v1/create-qr-code/?size=300x300&data=${encodeURIComponent(qr)}`);
@@ -95,14 +92,27 @@ async function startWhatsApp() {
       const msg = m.messages[0];
       if (!msg.message || msg.key.fromMe) return;
 
-      const remoteJid = msg.key.remoteJid; // ID único del usuario (sirve para todos)
-      const fromClean = remoteJid.replace('@s.whatsapp.net', '').split(':')[0]; // Número limpio
+      const remoteJid = msg.key.remoteJid;
+      const fromClean = remoteJid.replace('@s.whatsapp.net', '').split(':')[0];
 
+      // VARIABLES PARA ENVIAR A PYTHON
       let text = msg.message.conversation || msg.message.extendedTextMessage?.text;
       let audioBase64 = null;
+      let type = 'text'; // Por defecto es texto
+      let locationData = null; // Para guardar latitud/longitud
 
-      // 🎤 DETECTAR AUDIO (NOTA DE VOZ)
-      if (msg.message.audioMessage) {
+      // 1. DETECTAR UBICACIÓN (GPS)
+      if (msg.message.locationMessage) {
+          type = 'location';
+          locationData = {
+              degreesLatitude: msg.message.locationMessage.degreesLatitude,
+              degreesLongitude: msg.message.locationMessage.degreesLongitude
+          };
+          console.log(`📍 Ubicación recibida de ${fromClean}`);
+      }
+      // 2. DETECTAR AUDIO (NOTA DE VOZ)
+      else if (msg.message.audioMessage) {
+          type = 'audio';
           console.log(`🎤 Nota de voz recibida de ${fromClean}... Descargando.`);
           try {
               const buffer = await downloadMediaMessage(
@@ -112,30 +122,33 @@ async function startWhatsApp() {
                   { logger: pino({ level: 'silent' }) }
               );
               audioBase64 = buffer.toString('base64');
-              text = "[NOTA_DE_VOZ]"; // Marcador para Python
+              text = "[NOTA_DE_VOZ]";
           } catch (e) {
               console.error("⚠️ Error descargando audio:", e);
               return; 
           }
       }
 
-      if (!text && !audioBase64) return; // Si no es texto ni audio, ignorar
+      // Si no hay texto, ni audio, ni ubicación, ignoramos
+      if (!text && !audioBase64 && !locationData) return; 
 
-      console.log(`📩 Enviando a Python (${fromClean}): ${text}`);
+      console.log(`📩 Enviando a Python (${fromClean}) | Tipo: ${type}`);
 
-      // ⏳ TIMEOUT DE 60 SEGUNDOS (Para que Gemini tenga tiempo de pensar)
+      // ⏳ TIMEOUT DE 60 SEGUNDOS
       const controller = new AbortController();
       const timeoutId = setTimeout(() => controller.abort(), 60000); 
 
       try {
-        // ENVIAMOS A PYTHONANYWHERE
+        // ENVIAMOS A PYTHONANYWHERE CON LOS DATOS NUEVOS
         const response = await fetch('https://MarioFeliz.pythonanywhere.com/webhook/whatsapp', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ 
                 from: fromClean, 
                 text: text, 
-                audio: audioBase64 // Enviamos el audio encriptado
+                audio: audioBase64,
+                type: type,           // Enviamos el tipo (text, audio, location)
+                location: locationData // Enviamos las coordenadas (si existen)
             }),
             signal: controller.signal
         });
@@ -164,7 +177,7 @@ async function startWhatsApp() {
   });
 }
 
-// --- SERVIDOR WEB SIMPLE (Para que Railway no cierre el proceso) ---
+// --- SERVIDOR WEB SIMPLE ---
 app.get('/', (req, res) => res.send('🤖 Bot de WhatsApp Activo - Sistema POS'));
 
 app.listen(PORT, () => {
@@ -180,7 +193,6 @@ app.post('/enviar-mensaje', async (req, res) => {
             return res.status(500).json({ error: 'Bot no conectado aún' });
         }
 
-        // Limpiamos el número por si acaso
         const jid = numero.includes('@s.whatsapp.net') ? numero : `${numero}@s.whatsapp.net`;
 
         await sock.sendMessage(jid, { text: texto });
